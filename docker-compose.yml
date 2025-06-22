@@ -1,7 +1,7 @@
 services:
     # PostgreSQL with TimescaleDB
     postgres:
-        image: timescale/timescaledb-ha:pg16-latest
+        image: timescale/timescaledb:latest-pg16
         container_name: forceflow-postgres
         environment:
             POSTGRES_DB: forceflow_uk
@@ -43,6 +43,7 @@ services:
         build:
             context: .
             dockerfile: Dockerfile
+            target: development
         container_name: forceflow-api
         environment:
             NODE_ENV: development
@@ -64,7 +65,7 @@ services:
                 condition: service_healthy
         networks:
             - forceflow-network
-        command: npm run dev
+        restart: unless-stopped
 
     # PostgreSQL Admin (optional)
     pgadmin:

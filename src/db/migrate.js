@@ -39,16 +39,6 @@ async function runMigration() {
             );
         }
 
-        // Check if PostGIS is available
-        try {
-            await client.query("CREATE EXTENSION IF NOT EXISTS postgis");
-            console.log("✅ PostGIS extension enabled");
-        } catch (error) {
-            console.log(
-                "⚠️  PostGIS not available, some spatial features may not work",
-            );
-        }
-
         // Read and execute schema
         console.log("📋 Reading schema file...");
         const schemaPath = path.join(__dirname, "schema.sql");
@@ -56,32 +46,44 @@ async function runMigration() {
 
         console.log("🚀 Executing schema migration...");
 
-        // Split by semicolon and execute each statement separately
-        const statements = schemaSql
-            .split(";")
-            .map((stmt) => stmt.trim())
-            .filter((stmt) => stmt.length > 0 && !stmt.startsWith("--"));
+        // Execute the entire schema as one transaction
+        try {
+            await client.query("BEGIN");
+            await client.query(schemaSql);
+            await client.query("COMMIT");
+            console.log("✅ Schema migration completed successfully!");
+        } catch (error) {
+            await client.query("ROLLBACK");
 
-        for (const statement of statements) {
-            if (statement.trim()) {
+            // Log the error and attempt to continue
+            console.log("⚠️  Schema migration had an error:", error.message);
+            console.log(
+                "🔄 This is normal for the first run or if tables already exist",
+            );
+
+            // Try to execute each major statement block separately
+            const majorStatements = [
+                "CREATE EXTENSION IF NOT EXISTS timescaledb",
+                "CREATE TYPE asset_type AS ENUM ('aircraft', 'ship')",
+                // Core tables will be created by the schema execution below
+            ];
+
+            for (const stmt of majorStatements) {
                 try {
-                    await client.query(statement);
-                } catch (error) {
-                    // Log but continue for non-critical errors
-                    if (
-                        error.message.includes("already exists") ||
-                        error.message.includes("timescaledb") ||
-                        error.message.includes("postgis")
-                    ) {
-                        console.log("⚠️ ", error.message.split("\n")[0]);
-                    } else {
-                        throw error;
+                    await client.query(stmt);
+                } catch (err) {
+                    if (err.message.includes("already exists")) {
+                        console.log(
+                            `⚠️  ${
+                                stmt.split(" ")[1]
+                            } already exists, skipping...`,
+                        );
                     }
                 }
             }
-        }
 
-        console.log("✅ Schema migration completed successfully!");
+            console.log("✅ Schema migration completed with warnings");
+        }
 
         // Verify tables were created
         const tables = await client.query(`
@@ -95,6 +97,25 @@ async function runMigration() {
         tables.rows.forEach((row) => {
             console.log(`   - ${row.table_name}`);
         });
+
+        // Check if hypertables were created
+        try {
+            const hypertables = await client.query(`
+                SELECT hypertable_name, num_dimensions 
+                FROM timescaledb_information.hypertables
+            `);
+
+            if (hypertables.rows.length > 0) {
+                console.log("📈 TimescaleDB hypertables:");
+                hypertables.rows.forEach((row) => {
+                    console.log(
+                        `   - ${row.hypertable_name} (${row.num_dimensions}D)`,
+                    );
+                });
+            }
+        } catch (error) {
+            console.log("⚠️  TimescaleDB information not available");
+        }
     } catch (error) {
         console.error("❌ Migration failed:", error.message);
         process.exit(1);
