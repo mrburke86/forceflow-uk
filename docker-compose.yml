@@ -1,0 +1,110 @@
+services:
+    # PostgreSQL with TimescaleDB
+    postgres:
+        image: timescale/timescaledb-ha:pg16-latest
+        container_name: forceflow-postgres
+        environment:
+            POSTGRES_DB: forceflow_uk
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: password
+            TIMESCALEDB_TELEMETRY: "off"
+        ports:
+            - "5432:5432"
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+            - ./src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres -d forceflow_uk"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        networks:
+            - forceflow-network
+
+    # Redis for caching and rate limiting
+    redis:
+        image: redis:7-alpine
+        container_name: forceflow-redis
+        ports:
+            - "6379:6379"
+        command: redis-server --appendonly yes
+        volumes:
+            - redis_data:/data
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        networks:
+            - forceflow-network
+
+    # ForceFlow UK API (development)
+    api:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        container_name: forceflow-api
+        environment:
+            NODE_ENV: development
+            DATABASE_URL: postgresql://postgres:password@postgres:5432/forceflow_uk
+            REDIS_URL: redis://redis:6379
+            PORT: 3000
+            LOG_LEVEL: info
+            JWT_SECRET: development-jwt-secret-change-in-production
+            CORS_ORIGIN: http://localhost:3001
+        ports:
+            - "3000:3000"
+        volumes:
+            - .:/app
+            - /app/node_modules
+        depends_on:
+            postgres:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+        networks:
+            - forceflow-network
+        command: npm run dev
+
+    # PostgreSQL Admin (optional)
+    pgadmin:
+        image: dpage/pgadmin4:latest
+        container_name: forceflow-pgadmin
+        environment:
+            PGADMIN_DEFAULT_EMAIL: admin@forceflow.uk
+            PGADMIN_DEFAULT_PASSWORD: admin
+            PGADMIN_CONFIG_SERVER_MODE: "False"
+        ports:
+            - "8080:80"
+        volumes:
+            - pgadmin_data:/var/lib/pgadmin
+        depends_on:
+            - postgres
+        networks:
+            - forceflow-network
+        profiles:
+            - admin
+
+    # Redis Commander (optional)
+    redis-commander:
+        image: rediscommander/redis-commander:latest
+        container_name: forceflow-redis-commander
+        environment:
+            REDIS_HOSTS: local:redis:6379
+        ports:
+            - "8081:8081"
+        depends_on:
+            - redis
+        networks:
+            - forceflow-network
+        profiles:
+            - admin
+
+volumes:
+    postgres_data:
+    redis_data:
+    pgadmin_data:
+
+networks:
+    forceflow-network:
+        driver: bridge
