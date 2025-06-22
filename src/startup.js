@@ -38,6 +38,9 @@ const fastify = Fastify({
     trustProxy: true,
 });
 
+// Global variable to track OpenSky service for status endpoint
+let openSkyService = null;
+
 async function startServices() {
     try {
         console.log("🚀 Starting ForceFlow UK services...");
@@ -187,7 +190,11 @@ async function startServices() {
             });
         });
 
-        // Step 5: Register routes
+        // Step 5: Initialize OpenSky service (but don't start yet)
+        console.log("🛠️  Initializing services...");
+        openSkyService = new OpenSkyService(fastify);
+
+        // Step 6: Register routes (BEFORE starting server)
         console.log("🛣️  Registering API routes...");
 
         // Health check (no auth required)
@@ -216,7 +223,7 @@ async function startServices() {
             };
         });
 
-        // Service status endpoint
+        // Service status endpoint (registered BEFORE server starts)
         fastify.get("/api/v1/services/status", async (request, reply) => {
             return {
                 timestamp: new Date().toISOString(),
@@ -225,6 +232,14 @@ async function startServices() {
                         status: "running",
                         uptime: process.uptime(),
                     },
+                    opensky: openSkyService
+                        ? openSkyService.getStatus()
+                        : {
+                              service: "OpenSky Network",
+                              running: false,
+                              configured: false,
+                              status: "not_started",
+                          },
                     database: {
                         status: "connected",
                         url:
@@ -237,7 +252,7 @@ async function startServices() {
             };
         });
 
-        // Step 6: Start the server
+        // Step 7: Start the server
         console.log("🌐 Starting web server...");
         const port = parseInt(process.env.PORT || "3000");
         const host = process.env.HOST || "0.0.0.0";
@@ -256,32 +271,11 @@ async function startServices() {
             }`,
         );
 
-        // Step 7: Start background services
+        // Step 8: Start background services (AFTER server is running)
         console.log("✈️  Starting OpenSky data ingestion...");
-        const openSkyService = new OpenSkyService(fastify);
-        openSkyService.start();
-
-        // Update service status to include OpenSky
-        fastify.get("/api/v1/services/status", async (request, reply) => {
-            return {
-                timestamp: new Date().toISOString(),
-                services: {
-                    api: {
-                        status: "running",
-                        uptime: process.uptime(),
-                    },
-                    opensky: openSkyService.getStatus(),
-                    database: {
-                        status: "connected",
-                        url:
-                            process.env.DATABASE_URL?.replace(
-                                /:[^:@]*@/,
-                                ":***@",
-                            ) || "not configured",
-                    },
-                },
-            };
-        });
+        if (openSkyService) {
+            openSkyService.start();
+        }
 
         console.log("✅ All services started successfully");
 
@@ -289,7 +283,9 @@ async function startServices() {
         const shutdown = async (signal) => {
             console.log(`\n📴 Received ${signal}, shutting down gracefully...`);
 
-            openSkyService.stop();
+            if (openSkyService) {
+                openSkyService.stop();
+            }
             await fastify.close();
 
             console.log("👋 ForceFlow UK shut down complete");
